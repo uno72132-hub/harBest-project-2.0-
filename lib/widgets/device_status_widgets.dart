@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_application_harbest_1/services/device_status.dart';
 import 'package:flutter_application_harbest_1/theme/app_style.dart';
+import 'package:flutter_application_harbest_1/widgets/status_widgets.dart';
 
 /// Everything the status pill and sheet need, in one value so the open
 /// sheet can rebuild live while the dashboard keeps polling.
@@ -39,14 +40,28 @@ class DeviceStatusPill extends StatelessWidget {
   final DeviceConnection connection;
   final VoidCallback? onTap;
 
-  const DeviceStatusPill({super.key, required this.connection, this.onTap});
+  /// Shown after the status, e.g. "● ONLINE | 🔋 82%". Hidden when null.
+  final double? batteryPct;
+  final bool batteryCharging;
+
+  const DeviceStatusPill({
+    super.key,
+    required this.connection,
+    this.onTap,
+    this.batteryPct,
+    this.batteryCharging = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final color = connection.color;
+    final pct = batteryPct;
+    final batteryText = pct == null
+        ? ''
+        : ', battery ${pct.round()} percent${batteryCharging ? ', charging' : ''}';
     return Semantics(
       button: onTap != null,
-      label: 'Device ${connection.label}. Tap for details.',
+      label: 'Device ${connection.label}$batteryText. Tap for details.',
       child: GestureDetector(
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
@@ -73,6 +88,28 @@ class DeviceStatusPill extends StatelessWidget {
                   letterSpacing: 0.3,
                 ),
               ),
+              if (pct != null) ...[
+                Container(
+                  width: 1,
+                  height: 12,
+                  margin: const EdgeInsets.symmetric(horizontal: 7),
+                  color: color.withOpacity(0.35),
+                ),
+                Icon(
+                  batteryIcon(pct, charging: batteryCharging),
+                  size: 14,
+                  color: batteryColor(pct, charging: batteryCharging),
+                ),
+                const SizedBox(width: 2),
+                Text(
+                  '${pct.round()}%',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: batteryColor(pct, charging: batteryCharging),
+                  ),
+                ),
+              ],
               if (onTap != null) ...[
                 const SizedBox(width: 2),
                 Icon(AppIcons.forward, size: 12, color: color),
@@ -262,6 +299,16 @@ class _DeviceStatusSheet extends StatelessWidget {
               ],
             ),
           ),
+          if (s?.batteryPct != null) ...[
+            const SizedBox(height: 12),
+            _BatteryCard(
+              pct: s!.batteryPct!,
+              charging: s.batteryCharging ?? false,
+              chargingKnown: s.batteryCharging != null,
+              voltage: s.batteryVoltage,
+              live: live,
+            ),
+          ],
           const SizedBox(height: 18),
 
           _row(
@@ -395,6 +442,92 @@ class _DeviceStatusSheet extends StatelessWidget {
               color: shown,
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Battery level with a bar, e.g. "82% · Charging · 4.05 V".
+class _BatteryCard extends StatelessWidget {
+  final double pct;
+  final bool charging;
+  final bool chargingKnown;
+  final double? voltage;
+  final bool live;
+
+  const _BatteryCard({
+    required this.pct,
+    required this.charging,
+    required this.chargingKnown,
+    required this.voltage,
+    required this.live,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = batteryColor(pct, charging: charging);
+    final shown = live ? color : color.withOpacity(0.55);
+
+    final String note;
+    if (!live) {
+      note = 'Last known level';
+    } else if (charging) {
+      note = 'Charging';
+    } else if (pct <= kBatteryLow) {
+      note = 'Low battery: charge the device soon';
+    } else if (chargingKnown) {
+      note = 'On battery';
+    } else {
+      note = 'Battery';
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.rowBackground,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: AppColors.outline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(batteryIcon(pct, charging: charging), color: shown, size: 26),
+              const SizedBox(width: 10),
+              Text(
+                '${pct.round()}%',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: shown,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  note,
+                  style: AppText.subtitle.copyWith(
+                    color: live && !charging && pct <= kBatteryLow
+                        ? AppColors.critical
+                        : AppColors.textSecondary,
+                    fontWeight: live && !charging && pct <= kBatteryLow
+                        ? FontWeight.w700
+                        : FontWeight.normal,
+                  ),
+                ),
+              ),
+              if (voltage != null)
+                Text(
+                  '${voltage!.toStringAsFixed(2)} V',
+                  style: AppText.caption.copyWith(fontSize: 12),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          AppProgressBar(value: pct / 100, color: shown, height: 6),
         ],
       ),
     );

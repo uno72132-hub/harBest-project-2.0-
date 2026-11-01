@@ -423,6 +423,20 @@ class _DashboardScreenState extends State<DashboardScreen>
         .subscribe();
   }
 
+  Widget _buildDeviceStatusPill() {
+    final view = _currentStatusView();
+    final conn = view.connection;
+    // Hide the battery once the device is offline: the level would be stale.
+    final showBattery = conn == DeviceConnection.online ||
+        conn == DeviceConnection.delayed;
+    return DeviceStatusPill(
+      connection: conn,
+      onTap: _openDeviceStatus,
+      batteryPct: showBattery ? _deviceStatus?.batteryPct : null,
+      batteryCharging: _deviceStatus?.batteryCharging ?? false,
+    );
+  }
+
   void _openDeviceStatus() {
     _syncStatusView();
     showDeviceStatusSheet(context, _statusView);
@@ -1235,11 +1249,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             ],
           ),
         ),
-        if (_deviceId != null)
-          DeviceStatusPill(
-            connection: _currentStatusView().connection,
-            onTap: _openDeviceStatus,
-          ),
+        if (_deviceId != null) _buildDeviceStatusPill(),
       ],
     );
   }

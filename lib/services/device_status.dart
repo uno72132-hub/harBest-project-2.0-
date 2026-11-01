@@ -67,6 +67,11 @@ class DeviceStatus {
   final int? uptimeSeconds;
   final double? cpuTemp;
 
+  /// 0–100, null when the device has no battery board.
+  final double? batteryPct;
+  final bool? batteryCharging;
+  final double? batteryVoltage;
+
   const DeviceStatus({
     required this.deviceId,
     this.lastSeen,
@@ -78,6 +83,9 @@ class DeviceStatus {
     this.ipAddress,
     this.uptimeSeconds,
     this.cpuTemp,
+    this.batteryPct,
+    this.batteryCharging,
+    this.batteryVoltage,
   });
 
   factory DeviceStatus.fromMap(Map<String, dynamic> m) {
@@ -97,6 +105,9 @@ class DeviceStatus {
       ipAddress: m['ip_address'] as String?,
       uptimeSeconds: asInt(m['uptime_s']),
       cpuTemp: asDouble(m['cpu_temp']),
+      batteryPct: asDouble(m['battery_pct']),
+      batteryCharging: asBool(m['battery_charging']),
+      batteryVoltage: asDouble(m['battery_voltage']),
     );
   }
 
@@ -109,6 +120,27 @@ class DeviceStatus {
     if (r >= -70) return 'Fair';
     return 'Weak';
   }
+}
+
+// ── Battery ──
+const double kBatteryLow = 20;
+const double kBatteryCaution = 40;
+
+Color batteryColor(double pct, {bool charging = false}) {
+  if (charging) return AppColors.optimal;
+  if (pct <= kBatteryLow) return AppColors.critical;
+  if (pct <= kBatteryCaution) return AppColors.caution;
+  return AppColors.optimal;
+}
+
+IconData batteryIcon(double pct, {bool charging = false}) {
+  if (charging) return Icons.battery_charging_full;
+  if (pct <= 5) return Icons.battery_alert;
+  if (pct <= 20) return Icons.battery_1_bar;
+  if (pct <= 40) return Icons.battery_2_bar;
+  if (pct <= 60) return Icons.battery_4_bar;
+  if (pct <= 85) return Icons.battery_5_bar;
+  return Icons.battery_full;
 }
 
 /// "Just now", "4 min ago", "2 h ago", "3 days ago".

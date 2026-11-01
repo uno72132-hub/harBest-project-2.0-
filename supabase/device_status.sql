@@ -3,6 +3,7 @@
 --
 --  Run this once in the Supabase dashboard → SQL Editor → New query.
 --  Safe to run again: everything uses IF NOT EXISTS / OR REPLACE.
+--  Already ran an older version? Just run the whole file again.
 --
 --  The Raspberry Pi calls device_heartbeat() every 30 seconds. The app
 --  reads device_status to show Online / Delayed / Offline and the health
@@ -24,6 +25,12 @@ create table if not exists public.device_status (
   last_read_at  text,           -- Pi's local clock time of its last sensor cycle
   software      text            -- script version string
 );
+
+-- 1b) Battery (added later; safe to run on an existing table).
+alter table public.device_status
+  add column if not exists battery_pct      real,     -- 0–100
+  add column if not exists battery_charging boolean,  -- null = unknown
+  add column if not exists battery_voltage  real;     -- volts
 
 -- 2) Only signed-in users can read, and only the devices behind crops
 --    they can already see (the sub-select obeys the crops table's own RLS,
@@ -56,7 +63,8 @@ begin
 
   insert into public.device_status as s (
     device_id, last_seen, dht22_ok, npk_ok, camera_ok, mqtt_ok,
-    wifi_rssi, ip_address, uptime_s, cpu_temp, last_read_at, software
+    wifi_rssi, ip_address, uptime_s, cpu_temp, last_read_at, software,
+    battery_pct, battery_charging, battery_voltage
   ) values (
     p_device_id,
     now(),
@@ -69,7 +77,10 @@ begin
     (p_status->>'uptime_s')::bigint,
     (p_status->>'cpu_temp')::real,
     p_status->>'last_read_at',
-    p_status->>'software'
+    p_status->>'software',
+    least(greatest((p_status->>'battery_pct')::real, 0), 100),
+    (p_status->>'battery_charging')::boolean,
+    (p_status->>'battery_voltage')::real
   )
   on conflict (device_id) do update set
     last_seen    = excluded.last_seen,
@@ -82,7 +93,10 @@ begin
     uptime_s     = excluded.uptime_s,
     cpu_temp     = excluded.cpu_temp,
     last_read_at = excluded.last_read_at,
-    software     = excluded.software;
+    software     = excluded.software,
+    battery_pct      = excluded.battery_pct,
+    battery_charging = excluded.battery_charging,
+    battery_voltage  = excluded.battery_voltage;
 end;
 $$;
 

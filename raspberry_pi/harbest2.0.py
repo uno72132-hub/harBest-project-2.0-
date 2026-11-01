@@ -63,7 +63,23 @@ NPK_RETRY_DELAY = 2.0
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 HEARTBEAT_INTERVAL = 30
-SOFTWARE_VERSION = "harbest2.0-heartbeat1"
+SOFTWARE_VERSION = "harbest2.0-heartbeat2"
+
+# Battery board. A Pi Zero can't measure a battery by itself, so this reads
+# it from an add-on board:
+#   "auto"    try PiSugar first, then an INA219 UPS HAT (default)
+#   "pisugar" PiSugar 2 / 3 (needs the pisugar-server service running)
+#   "ina219"  Waveshare UPS HAT (C) or another INA219-based board
+#             (needs: sudo apt install -y python3-smbus2, and I2C enabled
+#             in sudo raspi-config -> Interface Options -> I2C)
+#   "none"    no battery (powered from a wall adapter)
+BATTERY_SOURCE = os.environ.get("BATTERY_SOURCE", "auto").lower()
+PISUGAR_HOST = "127.0.0.1"
+PISUGAR_PORT = 8423
+INA219_ADDRESSES = (0x43, 0x42, 0x41, 0x40)  # Waveshare UPS HAT (C) uses 0x43
+# Single Li-ion / LiPo cell: voltage at 0% and 100% (rough but standard).
+BATTERY_EMPTY_V = 3.0
+BATTERY_FULL_V = 4.2
 
 # Updated by the main loop after every sensor cycle; read by the
 # heartbeat thread. None = not measured yet.
@@ -235,10 +251,113 @@ def _read_ip():
         s.close()
 
 
+# --- Battery ------------------------------------------------------------
+
+_battery_reader = None   # chosen once, then reused
+_battery_logged = False
+
+
+def _pisugar_query(cmd):
+    """Ask pisugar-server one question, e.g. 'get battery' -> '85.3'."""
+    with socket.create_connection((PISUGAR_HOST, PISUGAR_PORT), timeout=2) as s:
+        s.sendall((cmd + "\n").encode())
+        reply = s.recv(256).decode("utf-8", "replace").strip()
+    # Replies look like "battery: 85.32" or "battery_charging: true"
+    return reply.split(":", 1)[1].strip() if ":" in reply else None
+
+
+def _read_pisugar():
+    pct = _pisugar_query("get battery")
+    if pct is None:
+        return None
+    charging = None
+    voltage = None
+    try:
+        c = _pisugar_query("get battery_charging")
+        if c in ("true", "false"):
+            charging = c == "true"
+    except Exception:
+        pass
+    try:
+        v = _pisugar_query("get battery_v")
+        voltage = round(float(v), 2) if v else None
+    except Exception:
+        pass
+    return {"pct": round(float(pct), 1), "charging": charging, "voltage": voltage}
+
+
+def _make_ina219_reader():
+    from smbus2 import SMBus  # sudo apt install -y python3-smbus2
+    bus = SMBus(1)
+    for addr in INA219_ADDRESSES:
+        try:
+            bus.read_i2c_block_data(addr, 0x02, 2)
+        except OSError:
+            continue
+
+        def read(addr=addr):
+            # Bus-voltage register 0x02: bits 15..3, 4 mV per step.
+            hi, lo = bus.read_i2c_block_data(addr, 0x02, 2)
+            volts = (((hi << 8) | lo) >> 3) * 0.004
+            pct = (volts - BATTERY_EMPTY_V) / (BATTERY_FULL_V - BATTERY_EMPTY_V) * 100
+            return {
+                "pct": round(max(0.0, min(100.0, pct)), 1),
+                "charging": None,  # needs board-specific calibration
+                "voltage": round(volts, 2),
+            }
+
+        read()  # make sure it really works
+        return read, f"INA219 at 0x{addr:02x}"
+    bus.close()
+    return None, None
+
+
+def _choose_battery_reader():
+    if BATTERY_SOURCE in ("pisugar", "auto"):
+        try:
+            if _read_pisugar() is not None:
+                return _read_pisugar, "PiSugar"
+        except Exception as e:
+            if BATTERY_SOURCE == "pisugar":
+                print(f"[Battery] PiSugar not reachable: {e}")
+    if BATTERY_SOURCE in ("ina219", "auto"):
+        try:
+            reader, name = _make_ina219_reader()
+            if reader:
+                return reader, name
+        except Exception as e:
+            if BATTERY_SOURCE == "ina219":
+                print(f"[Battery] INA219 not available: {e}")
+    return None, None
+
+
+def read_battery():
+    """{'pct', 'charging', 'voltage'} or None when there is no battery board."""
+    global _battery_reader, _battery_logged
+    if BATTERY_SOURCE == "none":
+        return None
+    if _battery_reader is None:
+        reader, name = _choose_battery_reader()
+        if reader is None:
+            if not _battery_logged:
+                print("[Battery] No battery board found -- battery not reported")
+                _battery_logged = True
+            return None
+        _battery_reader = reader
+        print(f"[Battery] Using {name}")
+    try:
+        return _battery_reader()
+    except Exception as e:
+        print(f"[Battery] Read failed: {e}")
+        _battery_reader = None  # look for the board again next time
+        return None
+
+
 def send_heartbeat():
     """One heartbeat to Supabase. Returns True on success. Never raises."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return False
+    battery = read_battery() or {}
     body = {
         "p_device_id": CLIENT_ID,
         "p_status": {
@@ -252,6 +371,9 @@ def send_heartbeat():
             "cpu_temp": _read_cpu_temp(),
             "last_read_at": last_read_at,
             "software": SOFTWARE_VERSION,
+            "battery_pct": battery.get("pct"),
+            "battery_charging": battery.get("charging"),
+            "battery_voltage": battery.get("voltage"),
         },
     }
     req = urllib.request.Request(
